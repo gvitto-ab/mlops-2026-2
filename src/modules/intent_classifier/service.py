@@ -17,7 +17,8 @@ def load_models():
         raise RuntimeError('Sem modelos: defina WANDB_MODELS com uma ou mais URLs separadas por virgula.')
 
     for url in url_models:
-        model_name = url.split('/')[-1].split(':')[0]
+        # W&B "entidade/projeto/confusion-clf:v0" ou arquivo local ".../confusion-clf.keras"
+        model_name = os.path.splitext(url.split('/')[-1].split(':')[0])[0]
         clf = IntentClassifier(load_model=url, wandb_project=wandb_project)
         _models[model_name] = clf
 

@@ -25,6 +25,11 @@ COPY --chown=appuser:appuser src ./src
 
 ENV PYTHONPATH=/app
 
+# Modelo treinado vai junto na imagem (src/modules/intent_classifier/artifacts),
+# entao a API nao depende do W&B para subir. Para voltar a baixar do W&B,
+# rode com WANDB_MODE=online e WANDB_MODELS=entidade/projeto/modelo:versao
+ENV WANDB_MODE=disabled
+
 EXPOSE 8000
 
 CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "8000", "--log-level","info"]

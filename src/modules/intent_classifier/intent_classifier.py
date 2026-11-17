@@ -247,11 +247,18 @@ class IntentClassifier:
 
         # Set up W&B project early
         self.wandb_project = wandb_project or os.environ.get("WANDB_PROJECT") or "intent-classifier"
+        # WANDB_MODE=disabled: nenhum login, run ou artifact no W&B
+        if os.environ.get("WANDB_MODE", "").lower() == "disabled":
+            self.wandb_project = None
 
         if load_model:
             # Check if load_model is a local file path or a W&B artifact URL
             if os.path.exists(load_model):
                 local_model_path = load_model
+                # save_model() grava o config ao lado do modelo: <base>_config.yml
+                local_config = os.path.splitext(load_model)[0] + "_config.yml"
+                if config is None and os.path.exists(local_config):
+                    config = local_config
             else:
                 # If not a local path, assume it's a W&B artifact and fetch it.
                 # The associated config path will be discovered and used automatically.
