@@ -151,12 +151,24 @@ for i in 1 2 3 4 5 6; do
   echo "   aguardando propagação... ($i)"; sleep 15
 done
 
-echo "== Credencial federada ($GH_SUBJECT)"
-if az identity federated-credential show --name github-production      --identity-name "$IDENTITY" -g "$RG" -o none 2>/dev/null; then
-  echo "   já existe"
-else
-  az identity federated-credential create --name github-production     --identity-name "$IDENTITY" -g "$RG"     --issuer https://token.actions.githubusercontent.com     --subject "$GH_SUBJECT"     --audiences api://AzureADTokenExchange -o none
-fi
+# O GitHub passou a mandar o subject com os IDs numéricos do dono e do repo
+# (repo:dono@ID/repo@ID:environment:...). Cadastramos os dois formatos.
+GH_IDS=$(curl -s https://api.github.com/repos/gvitto-ab/mlops-2026-2 | jq -r '"\(.owner.id) \(.id)"')
+GH_SUBJECT_IDS="repo:gvitto-ab@${GH_IDS% *}/mlops-2026-2@${GH_IDS#* }:environment:production"
+for par in "github-production|$GH_SUBJECT" "github-production-ids|$GH_SUBJECT_IDS"; do
+  nome=${par%%|*}; subj=${par#*|}
+  echo "== Credencial federada $nome ($subj)"
+  if az identity federated-credential show --name "$nome" \
+       --identity-name "$IDENTITY" -g "$RG" -o none 2>/dev/null; then
+    echo "   já existe"
+  else
+    az identity federated-credential create --name "$nome" \
+      --identity-name "$IDENTITY" -g "$RG" \
+      --issuer https://token.actions.githubusercontent.com \
+      --subject "$subj" \
+      --audiences api://AzureADTokenExchange -o none
+  fi
+done
 
 cat <<EOF
 
