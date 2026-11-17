@@ -245,3 +245,28 @@ Campos do corpo do `POST /predictions`: `text` (a mensagem, obrigatória e não 
 ## Próximos passos
 
 Empacotar a API em um container **Docker**, para rodar em qualquer máquina sem montar o ambiente conda à mão.
+
+---
+
+## Lab4 - Deploy contínuo (GitHub Actions + Azure Container Apps)
+
+Repositório do aluno: `gvitto-ab/mlops-2026-2`. Imagem: `ghcr.io/gvitto-ab/mlops-2026-2:<tag>`.
+
+- `GET /` devolve `{"status": "ok", "version": APP_VERSION}` (`dev` quando a variável não existe).
+- `.github/workflows/ci.yml` aceita `workflow_call`; `.github/workflows/cd.yml` roda em tags `v*`
+  (ci -> release no GHCR -> deploy com aprovação no environment `production` -> verify na URL pública)
+  e tem rollback pelo botão *Run workflow* informando uma tag já publicada.
+- `infra/azure-setup.sh`: cria pelo Azure Cloud Shell o Container App, a identidade gerenciada e a
+  credencial federada OIDC (mesmo resultado da Parte 2 feita no portal).
+
+### Modelo dentro da imagem (W&B opcional)
+
+A conta W&B do aluno ficou sem permissão de escrita (organização acadêmica sem time disponível),
+então não foi possível publicar nem baixar o `confusion-clf` do W&B. O modelo foi treinado com o mesmo
+código e a mesma configuração do notebook (`dataset_name=confusion`, `sent_hl_units=32`,
+`sent_dropout=0.4`, `learning_rate=1e-4`) e vai junto na imagem, em
+`src/modules/intent_classifier/artifacts/confusion-clf.keras` (+ `confusion-clf_config.yml`).
+
+- `WANDB_MODELS` aceita um caminho local: `/app/src/modules/intent_classifier/artifacts/confusion-clf.keras`.
+- O `Dockerfile` define `WANDB_MODE=disabled` (sem login/run no W&B). Para voltar ao fluxo original,
+  use `WANDB_MODE=online` e `WANDB_MODELS=entidade/projeto/confusion-clf:vN`.
