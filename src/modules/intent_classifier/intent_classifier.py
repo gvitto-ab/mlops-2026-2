@@ -258,6 +258,7 @@ class IntentClassifier:
                 local_model_path, config = fetch_artifact_from_wandb(load_model)
 
             self.model = tf.keras.models.load_model(local_model_path)
+            self.model.jit_compile = False  # XLA na CPU nao aceita entrada string
             print(f"Loaded Keras model from {local_model_path}.")
 
         # Load config. If fetched from W&B, `config` is already the correct path.
