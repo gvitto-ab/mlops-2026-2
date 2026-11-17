@@ -63,74 +63,78 @@ fi
 az group show -n "$RG" --query "{nome:name, regiao:location}" -o table
 
 echo "== Container Apps Environment $ENV_NAME (cria também um Log Analytics; ~3 min)"
-ENV_OK=""
-for cand in $CANDS; do
-  echo "   tentando $cand..."
-  if az containerapp env create -n "$ENV_NAME" -g "$RG" -l "$cand" -o none 2>/tmp/env.err; then
-    LOC=$cand; ENV_OK=1; break
-  fi
-  if grep -qiE "RequestDisallowedByPolicy|LocationNotAvailable|not available|disallowed" /tmp/env.err; then
-    echo "   $cand não permitida, próxima"; continue
-  fi
-  cat /tmp/env.err; exit 1
-done
-[ -n "$ENV_OK" ] || { echo "Nenhuma região aceitou o Environment"; cat /tmp/env.err; exit 1; }
+if az containerapp env show -n "$ENV_NAME" -g "$RG" -o none 2>/dev/null; then
+  # rodando de novo: reaproveita o Environment e a região dele
+  LOC=$(az containerapp env show -n "$ENV_NAME" -g "$RG" --query location -o tsv | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+  echo "   já existe, reaproveitando"
+else
+  ENV_OK=""
+  for cand in $CANDS; do
+    echo "   tentando $cand..."
+    if az containerapp env create -n "$ENV_NAME" -g "$RG" -l "$cand" -o none 2>/tmp/env.err; then
+      LOC=$cand; ENV_OK=1; break
+    fi
+    if grep -qiE "RequestDisallowedByPolicy|LocationNotAvailable|not available|disallowed" /tmp/env.err; then
+      echo "   $cand não permitida, próxima"; continue
+    fi
+    cat /tmp/env.err; exit 1
+  done
+  [ -n "$ENV_OK" ] || { echo "Nenhuma região aceitou o Environment"; cat /tmp/env.err; exit 1; }
+fi
 echo "== Região usada: $LOC"
 ENV_ID=$(az containerapp env show -n "$ENV_NAME" -g "$RG" --query id -o tsv)
+SUB_ID=$(az account show --query id -o tsv)
+APP_URI="https://management.azure.com/subscriptions/$SUB_ID/resourceGroups/$RG/providers/Microsoft.App/containerApps/$APP?api-version=2024-03-01"
 
-echo "== Container App $APP"
-cat > /tmp/intent-clf.yaml <<EOF
-location: $LOC
-name: $APP
-type: Microsoft.App/containerApps
-properties:
-  managedEnvironmentId: $ENV_ID
-  configuration:
-    activeRevisionsMode: Single
-    ingress:
-      external: true
-      targetPort: 8000
-      transport: auto
-    secrets:
-      - name: mongo-url
-        value: "$MONGO_URL"
-      - name: wandb-api-key
-        value: "$WANDB_API_KEY"
-  template:
-    containers:
-      - name: $APP
-        image: $IMAGE
-        resources:
-          cpu: 2.0
-          memory: 4Gi
-        env:
-          - name: WANDB_PROJECT
-            value: mlops-2026-2
-          - name: WANDB_MODELS
-            value: /app/src/modules/intent_classifier/artifacts/confusion-clf.keras
-          - name: MONGO_DB
-            value: intent_classifier
-          - name: APP_VERSION
-            value: v1.0.0
-          - name: OTEL_SDK_DISABLED
-            value: "true"
-          - name: MONGO_URL
-            secretRef: mongo-url
-          - name: WANDB_API_KEY
-            secretRef: wandb-api-key
-        probes:
-          - type: Startup
-            tcpSocket:
-              port: 8000
-            periodSeconds: 10
-            failureThreshold: 60
-    scale:
-      minReplicas: 1
-      maxReplicas: 1
-EOF
-az containerapp create -n "$APP" -g "$RG" --yaml /tmp/intent-clf.yaml -o none
-rm -f /tmp/intent-clf.yaml
-FQDN=$(az containerapp show -n "$APP" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+echo "== Container App $APP (direto na API do Azure; ~2 min)"
+# O corpo é montado com jq (escapa a MONGO_URL corretamente) num arquivo
+# temporário só legível por você, apagado logo depois.
+umask 077
+BODY=$(mktemp)
+jq -n --arg loc "$LOC" --arg env "$ENV_ID" --arg app "$APP" --arg img "$IMAGE" \
+      --arg mongo "$MONGO_URL" --arg wandb "$WANDB_API_KEY" '{
+  location: $loc,
+  properties: {
+    managedEnvironmentId: $env,
+    configuration: {
+      activeRevisionsMode: "Single",
+      ingress: { external: true, targetPort: 8000, transport: "auto" },
+      secrets: [ { name: "mongo-url", value: $mongo },
+                 { name: "wandb-api-key", value: $wandb } ]
+    },
+    template: {
+      containers: [ {
+        name: $app, image: $img,
+        resources: { cpu: 2.0, memory: "4Gi" },
+        env: [
+          { name: "WANDB_PROJECT", value: "mlops-2026-2" },
+          { name: "WANDB_MODELS", value: "/app/src/modules/intent_classifier/artifacts/confusion-clf.keras" },
+          { name: "MONGO_DB", value: "intent_classifier" },
+          { name: "APP_VERSION", value: "v1.0.0" },
+          { name: "OTEL_SDK_DISABLED", value: "true" },
+          { name: "MONGO_URL", secretRef: "mongo-url" },
+          { name: "WANDB_API_KEY", secretRef: "wandb-api-key" }
+        ],
+        probes: [ { type: "Startup", tcpSocket: { port: 8000 },
+                    periodSeconds: 10, failureThreshold: 60 } ]
+      } ],
+      scale: { minReplicas: 1, maxReplicas: 1 }
+    }
+  }
+}' > "$BODY"
+az rest --method put --url "$APP_URI" --body @"$BODY" -o none
+rm -f "$BODY"
+umask 022
+
+STATE=""
+for i in $(seq 1 40); do
+  STATE=$(az rest --method get --url "$APP_URI" --query properties.provisioningState -o tsv)
+  echo "   estado: $STATE"
+  [ "$STATE" = "Succeeded" ] && break
+  [ "$STATE" = "Failed" ] && { echo "Falhou ao criar o Container App"; exit 1; }
+  sleep 15
+done
+FQDN=$(az rest --method get --url "$APP_URI" --query properties.configuration.ingress.fqdn -o tsv)
 
 echo "== Identidade gerenciada $IDENTITY"
 az identity create -n "$IDENTITY" -g "$RG" -l "$LOC" -o none
@@ -148,11 +152,11 @@ for i in 1 2 3 4 5 6; do
 done
 
 echo "== Credencial federada ($GH_SUBJECT)"
-az identity federated-credential create --name github-production \
-  --identity-name "$IDENTITY" -g "$RG" \
-  --issuer https://token.actions.githubusercontent.com \
-  --subject "$GH_SUBJECT" \
-  --audiences api://AzureADTokenExchange -o none
+if az identity federated-credential show --name github-production      --identity-name "$IDENTITY" -g "$RG" -o none 2>/dev/null; then
+  echo "   já existe"
+else
+  az identity federated-credential create --name github-production     --identity-name "$IDENTITY" -g "$RG"     --issuer https://token.actions.githubusercontent.com     --subject "$GH_SUBJECT"     --audiences api://AzureADTokenExchange -o none
+fi
 
 cat <<EOF
 
